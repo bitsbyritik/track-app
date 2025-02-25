@@ -7,10 +7,20 @@ use serde_json::{json, Value};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
+use tauri::{Manager, State};
 
 const FILE_PATH: &str = "event.csv";
+
+struct AppState {
+    task_name: Mutex<Option<String>>,
+    tracking_status: Arc<AtomicBool>,
+}
 
 #[derive(Serialize)]
 struct MouseEvent {
@@ -56,7 +66,7 @@ fn write_to_csv(data: &Value) {
         .expect("Failed to write");
 }
 
-fn track_event(event: Event) {
+fn track_event(event: Event, state: &State<AppState>) {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -102,22 +112,73 @@ fn track_event(event: Event) {
     };
 
     let mut data = read_file();
+    let task_name = state
+        .task_name
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
 
-    if let Some(array) = data["new"].as_array_mut() {
+    if let Some(array) = data[task_name.clone()].as_array_mut() {
         array.push(log_event);
     } else {
-        data["new"] = json!([log_event]);
+        data[task_name] = json!([log_event]);
     }
 
     write_to_csv(&data);
 }
 
-fn main() {
-    //   track_event_lib::run()
+#[tauri::command]
+fn set_task_name(task: String, state: State<AppState>) {
+    let mut task_name = state.task_name.lock().unwrap();
+    *task_name = Some(task);
+    println!("Task name set to: {}", task_name.clone().unwrap());
+}
 
+#[tauri::command]
+fn start_tracking(state: State<AppState>) {
+    state.tracking_status.store(true, Ordering::Relaxed);
+    println!("Tracking Started");
+}
+
+#[tauri::command]
+fn stop_tracking(state: State<AppState>) {
+    state.tracking_status.store(false, Ordering::Relaxed);
+    println!("Tracking Stopped");
+}
+
+fn main() {
     initialize_file();
 
-    if let Err(error) = listen(track_event) {
-        eprint!("Error: {:?}", error);
-    }
+    let state = AppState {
+        task_name: Mutex::new(None),
+        tracking_status: Arc::new(AtomicBool::new(false)),
+    };
+
+    tauri::Builder::default()
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            set_task_name,
+            start_tracking,
+            stop_tracking
+        ])
+        .setup(|app| {
+            let handle = app.handle();
+            let handle_clone = handle.clone();
+            let tracking_flag = app.state::<AppState>().tracking_status.clone();
+
+            std::thread::spawn(move || {
+                if let Err(error) = listen(move |event| {
+                    if tracking_flag.load(Ordering::Relaxed) {
+                        let state = handle_clone.state::<AppState>();
+                        track_event(event, &state);
+                    }
+                }) {
+                    eprint!("Error: {:?}", error);
+                }
+            });
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running application");
 }

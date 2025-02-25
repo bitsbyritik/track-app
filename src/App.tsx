@@ -1,28 +1,29 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
   const [taskName, setTaskName] = useState("");
 
-  async function greet() {
+  async function startTracking() {
     // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+    if (!taskName.trim()) {
+      console.error("Task name cannot be empty.");
+      return;
+    }
+    try {
+      await invoke("set_task_name", { task: taskName });
+      await invoke("start_tracking");
+    } catch (err) {
+      console.error("Error setting up task name: ", err);
+    }
   }
 
   return (
     <main className="container">
       <h1>Welcome to Track Event</h1>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
+      <form className="row" onClick={startTracking}>
         <input
           id="greet-input"
           onChange={(e) => setTaskName(e.currentTarget.value)}
@@ -30,7 +31,6 @@ function App() {
         />
         <button type="submit">Start Tracking</button>
       </form>
-      <p>{greetMsg}</p>
     </main>
   );
 }
